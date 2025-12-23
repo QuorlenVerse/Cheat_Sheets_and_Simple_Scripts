@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ComfyUI FL Path Animator – Advanced Audio Radial</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+    font-family: system-ui, sans-serif;
+    background:#121212;
+    color:#e0e0e0;
+    margin:0;
+    padding:20px;
+}
+h2,h3 { color:#fff; margin:0 0 10px }
+.container {
+    display:flex;
+    gap:20px;
+    flex-wrap:wrap;
+    max-width:1400px;
+    margin:auto;
+}
+.panel {
+    background:#1e1e1e;
+    border:1px solid #333;
+    border-radius:8px;
+    padding:20px;
+}
+.controls { flex:1; min-width:320px }
+.preview { flex:2; min-width:420px; text-align:center }
+.output { flex:1; min-width:320px }
+
+label {
+    display:block;
+    margin-top:14px;
+    font-size:11px;
+    letter-spacing:.08em;
+    color:#aaa;
+    text-transform:uppercase;
+}
+input[type=file],input[type=range] { width:100% }
+.row {
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+}
+.val { color:#4fc3f7; font-family:monospace }
+
+canvas {
+    max-width:100%;
+    background:#111;
+    border:1px solid #444;
+}
+
+textarea {
+    width:100%;
+    height:420px;
+    background:#0e0e0e;
+    color:#76ff03;
+    border:1px solid #333;
+    font-family:Consolas,monospace;
+    font-size:12px;
+    padding:10px;
+}
+
+button {
+    width:100%;
+    margin-top:15px;
+    padding:12px;
+    border:none;
+    border-radius:4px;
+    font-weight:bold;
+    cursor:pointer;
+    background:#2196f3;
+    color:#fff;
+}
+button:hover { background:#1976d2 }
+#playBtn { background:#00e676; color:#000 }
+</style>
+</head>
+<body>
+
+<h2>Advanced Audio-Reactive Radial Path Generator</h2>
+
+<div class="container">
+
+<div class="controls panel">
+<h3>Input</h3>
+<label>Reference Image</label>
+<input type="file" id="imageInput" accept="image/*">
+
+<label>Audio File</label>
+<input type="file" id="audioInput" accept="audio/*">
+<div id="audioStatus" style="font-size:12px;color:#ffeb3b"></div>
+
+<hr style="border-color:#333;margin:20px 0">
+
+<h3>Animation</h3>
+
+<div class="row"><label>FPS</label><span id="fpsVal" class="val">15</span></div>
+<input type="range" id="fps" min="1" max="60" value="15">
+
+<div class="row"><label>Tracks</label><span id="tracksVal" class="val">8</span></div>
+<input type="range" id="tracks" min="1" max="36" value="8">
+
+<div class="row"><label>Base Radius</label><span id="baseVal" class="val">60</span></div>
+<input type="range" id="baseRadius" min="0" max="400" value="60">
+
+<div class="row"><label>Audio Distance</label><span id="sensVal" class="val">140</span></div>
+<input type="range" id="sensitivity" min="0" max="500" value="140">
+
+<div class="row"><label>Smoothing</label><span id="smoothVal" class="val">0.25</span></div>
+<input type="range" id="smoothing" min="0" max="1" step="0.05" value="0.25">
+
+<div class="row"><label>Center X (%)</label><span id="cxVal" class="val">50</span></div>
+<input type="range" id="centerX" min="0" max="100" value="50">
+
+<div class="row"><label>Center Y (%)</label><span id="cyVal" class="val">50</span></div>
+<input type="range" id="centerY" min="0" max="100" value="50">
+
+<div class="row"><label>Rotation (deg/sec)</label><span id="rotVal" class="val">0</span></div>
+<input type="range" id="rotation" min="-180" max="180" value="0">
+
+<div class="row"><label>Phase Offset (deg)</label><span id="phaseVal" class="val">0</span></div>
+<input type="range" id="phase" min="0" max="360" value="0">
+
+<button id="generateBtn">Generate JSON</button>
+</div>
+
+<div class="preview panel">
+<h3>Preview</h3>
+<canvas id="canvas" width="720" height="480"></canvas>
+<button id="playBtn">Play</button>
+<div id="time" style="font-family:monospace;color:#888;margin-top:6px">0.00 / 0.00</div>
+</div>
+
+<div class="output panel">
+<h3>JSON Output</h3>
+<textarea id="jsonOutput" readonly></textarea>
+<button id="copyBtn">Copy</button>
+</div>
+
+</div>
+
+<script>
+const el = id => document.getElementById(id);
+const canvas = el("canvas");
+const ctx = canvas.getContext("2d");
+
+let audioCtx, buffer, src, startTime, playing=false;
+let img=null, smoothedRadius=0;
+
+const inputs = [
+ "fps","tracks","baseRadius","sensitivity","smoothing",
+ "centerX","centerY","rotation","phase"
+].map(el);
+
+function updateUI(){
+ fpsVal.textContent=fps.value;
+ tracksVal.textContent=tracks.value;
+ baseVal.textContent=baseRadius.value;
+ sensVal.textContent=sensitivity.value;
+ smoothVal.textContent=smoothing.value;
+ cxVal.textContent=centerX.value;
+ cyVal.textContent=centerY.value;
+ rotVal.textContent=rotation.value;
+ phaseVal.textContent=phase.value;
+ if(!playing) draw(0);
+}
+inputs.forEach(i=>i.addEventListener("input",updateUI));
+
+imageInput.onchange=e=>{
+ const r=new FileReader();
+ r.onload=ev=>{
+  img=new Image();
+  img.onload=()=>{
+   canvas.width=img.width;
+   canvas.height=img.height;
+   draw(0);
+  };
+  img.src=ev.target.result;
+ };
+ r.readAsDataURL(e.target.files[0]);
+};
+
+audioInput.onchange=e=>{
+ const r=new FileReader();
+ audioStatus.textContent="Decoding...";
+ r.onload=ev=>{
+  audioCtx=new AudioContext();
+  audioCtx.decodeAudioData(ev.target.result,b=>{
+   buffer=b;
+   audioStatus.textContent=`Loaded ${b.duration.toFixed(2)}s`;
+   draw(0);
+  });
+ };
+ r.readAsArrayBuffer(e.target.files[0]);
+};
+
+function volumeAt(t){
+ if(!buffer) return 0;
+ const d=buffer.getChannelData(0);
+ const i=Math.floor(t*buffer.sampleRate);
+ let s=0,c=0;
+ for(let n=i;n<i+buffer.sampleRate/30 && n<d.length;n++){
+  s+=d[n]*d[n]; c++;
+ }
+ return c?Math.sqrt(s/c):0;
+}
+
+function draw(t){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ if(img){
+  ctx.drawImage(img,0,0);
+  ctx.fillStyle="rgba(0,0,0,.55)";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+ } else {
+  ctx.fillStyle="#111";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+ }
+
+ const cx=canvas.width*(centerX.value/100);
+ const cy=canvas.height*(centerY.value/100);
+ const vol=Math.min(volumeAt(t)*3,1);
+ const raw=+baseRadius.value+vol*+sensitivity.value;
+ smoothedRadius+= (raw-smoothedRadius)*(1-+smoothing.value);
+
+ const rot=(rotation.value*Math.PI/180)*t;
+ const phaseOff=phase.value*Math.PI/180;
+ const n=+tracks.value;
+
+ ctx.fillStyle="#00e676";
+ for(let i=0;i<n;i++){
+  const a=(Math.PI*2*i)/n + rot + phaseOff;
+  const x=cx+Math.cos(a)*smoothedRadius;
+  const y=cy+Math.sin(a)*smoothedRadius;
+  ctx.beginPath();
+  ctx.arc(x,y,7,0,Math.PI*2);
+  ctx.fill();
+ }
+}
+
+playBtn.onclick=()=>{
+ if(!buffer) return;
+ if(playing){
+  src.stop(); playing=false;
+  playBtn.textContent="Play";
+  return;
+ }
+ src=audioCtx.createBufferSource();
+ src.buffer=buffer;
+ src.connect(audioCtx.destination);
+ startTime=audioCtx.currentTime;
+ src.start();
+ playing=true;
+ playBtn.textContent="Stop";
+
+ const loop=()=>{
+  if(!playing) return;
+  const t=audioCtx.currentTime-startTime;
+  if(t>buffer.duration){ playBtn.onclick(); return; }
+  time.textContent=`${t.toFixed(2)} / ${buffer.duration.toFixed(2)}`;
+  draw(t);
+  requestAnimationFrame(loop);
+ };
+ loop();
+};
+
+generateBtn.onclick=()=>{
+ if(!buffer) return;
+ const fpsN=+fps.value;
+ const frames=Math.floor(buffer.duration*fpsN);
+ const n=+tracks.value;
+ const cx=canvas.width*(centerX.value/100);
+ const cy=canvas.height*(centerY.value/100);
+ let paths=[...Array(n)].map((_,i)=>({id:`p${i}`,points:[]}));
+
+ let rSmooth=0;
+ for(let f=0;f<frames;f++){
+  const t=f/fpsN;
+  const vol=Math.min(volumeAt(t)*3,1);
+  const raw=+baseRadius.value+vol*+sensitivity.value;
+  rSmooth+= (raw-rSmooth)*(1-+smoothing.value);
+  const rot=(rotation.value*Math.PI/180)*t;
+  const phaseOff=phase.value*Math.PI/180;
+
+  for(let i=0;i<n;i++){
+   const a=(Math.PI*2*i)/n + rot + phaseOff;
+   paths[i].points.push({
+    x:cx+Math.cos(a)*rSmooth,
+    y:cy+Math.sin(a)*rSmooth
+   });
+  }
+ }
+
+ jsonOutput.value=JSON.stringify({
+  meta:{
+   fps:fpsN,
+   center:{x:cx,y:cy},
+   rotation:+rotation.value,
+   smoothing:+smoothing.value,
+   phase:+phase.value
+  },
+  canvas_size:{width:canvas.width,height:canvas.height},
+  paths:paths.map((p,i)=>({
+   id:`path_${Date.now()}_${i}`,
+   name:`Track ${i+1}`,
+   points:p.points,
+   closed:false,
+   interpolation:"linear"
+  }))
+ });
+};
+
+copyBtn.onclick=()=>{
+ jsonOutput.select();
+ document.execCommand("copy");
+};
+
+updateUI();
+</script>
+</body>
+</html>
